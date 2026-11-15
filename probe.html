@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Frame Probe</title>
+<style>
+body{font-family:Arial,Helvetica,sans-serif;margin:8px;font-size:12px;color:#222;background:#fff}
+h1{font-size:14px;margin:0 0 6px}
+pre{white-space:pre-wrap;word-break:break-all;background:#f4f4f4;padding:6px;border:1px solid #ccc;max-height:none}
+button{font-size:12px;margin:2px 4px 6px 0;padding:4px 8px}
+#ctx{font-weight:bold}
+</style></head><body>
+<h1>Frame Probe v1 · context: <span id="ctx"></span></h1>
+<p>Collects only what any web page or ad frame can read. Nothing is sent anywhere.</p>
+<button id="copy">Copy JSON</button><button id="dl">Download JSON</button>
+<pre id="out">Collecting…</pre>
+<script>
+(async function(){
+  const r = {probeVersion:"1.0", collectedAt:new Date().toISOString()};
+  let ctx;
+  try { ctx = (window.top === window.self) ? "top-level" : "iframe"; } catch(e){ ctx = "iframe"; }
+  try { if (ctx==="iframe") { void window.top.location.href; ctx = "iframe (same-origin)"; } } catch(e){ ctx = "iframe (cross-origin)"; }
+  r.context = ctx; document.getElementById('ctx').textContent = ctx;
+  r.origin = location.origin;
+  const n = navigator;
+  r.userAgent = n.userAgent;
+  r.platform = n.platform;
+  r.vendor = n.vendor;
+  r.languages = n.languages;
+  r.hardwareConcurrency = n.hardwareConcurrency;
+  r.deviceMemory = n.deviceMemory;
+  r.maxTouchPoints = n.maxTouchPoints;
+  r.cookieEnabled = n.cookieEnabled;
+  r.timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  r.screen = {width:screen.width,height:screen.height,availWidth:screen.availWidth,availHeight:screen.availHeight,colorDepth:screen.colorDepth,devicePixelRatio:window.devicePixelRatio};
+  // User-Agent Client Hints (JavaScript API)
+  if (n.userAgentData) {
+    r.uaData_lowEntropy = {brands:n.userAgentData.brands, mobile:n.userAgentData.mobile, platform:n.userAgentData.platform};
+    try {
+      r.uaData_highEntropy = await n.userAgentData.getHighEntropyValues(
+        ["architecture","bitness","model","platformVersion","fullVersionList","wow64","formFactors"]);
+    } catch(e) { r.uaData_highEntropy = "ERROR: " + e.name + ": " + e.message; }
+  } else { r.uaData_lowEntropy = "not supported"; }
+  // WebGL
+  try {
+    const c = document.createElement('canvas');
+    const gl = c.getContext('webgl') || c.getContext('experimental-webgl');
+    if (gl) {
+      r.webgl = {vendor:gl.getParameter(gl.VENDOR), renderer:gl.getParameter(gl.RENDERER), version:gl.getParameter(gl.VERSION)};
+      const ext = gl.getExtension('WEBGL_debug_renderer_info');
+      if (ext) { r.webgl.unmaskedVendor = gl.getParameter(ext.UNMASKED_VENDOR_WEBGL); r.webgl.unmaskedRenderer = gl.getParameter(ext.UNMASKED_RENDERER_WEBGL); }
+      else { r.webgl.unmasked = "extension not available"; }
+    } else { r.webgl = "not available"; }
+  } catch(e){ r.webgl = "ERROR: " + e.message; }
+  // A few feature probes that reveal engine version ranges (presence only)
+  r.features = {
+    WebAssembly: typeof WebAssembly === "object",
+    SharedArrayBuffer: typeof SharedArrayBuffer === "function",
+    crossOriginIsolated: self.crossOriginIsolated === true,
+    ArrayPrototypeFindLast: typeof Array.prototype.findLast === "function",
+    ObjectGroupBy: typeof Object.groupBy === "function",
+    PromiseWithResolvers: typeof Promise.withResolvers === "function",
+    SetUnion: typeof Set.prototype.union === "function",
+    IteratorHelpers: typeof globalThis.Iterator === "function" && typeof Iterator.prototype.map === "function",
+    URLParse: typeof URL.parse === "function",
+    RegExpEscape: typeof RegExp.escape === "function",
+    FencedFrameElement: typeof window.HTMLFencedFrameElement === "function"
+  };
+  // Permissions-Policy view (Chromium only)
+  try {
+    const fp = document.featurePolicy || document.permissionsPolicy;
+    if (fp && fp.allowsFeature) {
+      r.policy = {};
+      ["ch-ua-model","ch-ua-platform-version","ch-ua-full-version-list","ch-ua-arch"].forEach(f=>{ try { r.policy[f]=fp.allowsFeature(f); } catch(e){ r.policy[f]="unknown"; } });
+    }
+  } catch(e){}
+  const json = JSON.stringify(r, null, 2);
+  document.getElementById('out').textContent = json;
+  document.getElementById('copy').onclick = async () => {
+    try { await navigator.clipboard.writeText(json); alertless("Copied"); } catch(e){ alertless("Copy blocked here: use Download, or long-press the text to select it"); }
+  };
+  document.getElementById('dl').onclick = () => {
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([json],{type:'application/json'}));
+    a.download = 'probe-' + ctx.replace(/[^a-z]/gi,'') + '-' + Date.now() + '.json'; a.click();
+  };
+  function alertless(m){ const b=document.getElementById('copy'); const t=b.textContent; b.textContent=m; setTimeout(()=>b.textContent=t,2000); }
+  try { parent.postMessage({frameProbe:r}, "*"); } catch(e){}
+})();
+</script></body></html>
