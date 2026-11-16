@@ -8,13 +8,13 @@ pre{white-space:pre-wrap;word-break:break-all;background:#f4f4f4;padding:6px;bor
 button{font-size:12px;margin:2px 4px 6px 0;padding:4px 8px}
 #ctx{font-weight:bold}
 </style></head><body>
-<h1>Frame Probe v1 · context: <span id="ctx"></span></h1>
+<h1>Frame Probe v1.1 · context: <span id="ctx"></span></h1>
 <p>Collects only what any web page or ad frame can read. Nothing is sent anywhere.</p>
 <button id="copy">Copy JSON</button><button id="dl">Download JSON</button>
 <pre id="out">Collecting…</pre>
 <script>
 (async function(){
-  const r = {probeVersion:"1.0", collectedAt:new Date().toISOString()};
+  const r = {probeVersion:"1.1", collectedAt:new Date().toISOString()};
   let ctx;
   try { ctx = (window.top === window.self) ? "top-level" : "iframe"; } catch(e){ ctx = "iframe"; }
   try { if (ctx==="iframe") { void window.top.location.href; ctx = "iframe (same-origin)"; } } catch(e){ ctx = "iframe (cross-origin)"; }
@@ -72,6 +72,65 @@ button{font-size:12px;margin:2px 4px 6px 0;padding:4px 8px}
       ["ch-ua-model","ch-ua-platform-version","ch-ua-full-version-list","ch-ua-arch"].forEach(f=>{ try { r.policy[f]=fp.allowsFeature(f); } catch(e){ r.policy[f]="unknown"; } });
     }
   } catch(e){}
+  // v1.1: the same questions asked from inside workers started by this page or frame
+  const workerSrc = `
+    async function collect(scope){
+      const o = {scope: scope};
+      const n = self.navigator;
+      try { o.userAgent = n.userAgent; o.platform = n.platform; o.languages = n.languages;
+            o.hardwareConcurrency = n.hardwareConcurrency; o.deviceMemory = n.deviceMemory; } catch(e){ o.navigatorError = String(e); }
+      try { o.timezone = Intl.DateTimeFormat().resolvedOptions().timeZone; } catch(e){}
+      try {
+        if (n.userAgentData) {
+          o.uaData_lowEntropy = {brands:n.userAgentData.brands, mobile:n.userAgentData.mobile, platform:n.userAgentData.platform};
+          o.uaData_highEntropy = await n.userAgentData.getHighEntropyValues(
+            ["architecture","bitness","model","platformVersion","fullVersionList","wow64","formFactors"]);
+        } else { o.uaData_lowEntropy = "not supported in worker"; }
+      } catch(e){ o.uaData_highEntropy = "ERROR: " + e.name + ": " + e.message; }
+      try {
+        if (typeof OffscreenCanvas === "function") {
+          const gl = new OffscreenCanvas(16,16).getContext("webgl");
+          if (gl) {
+            o.webgl = {vendor:gl.getParameter(gl.VENDOR), renderer:gl.getParameter(gl.RENDERER)};
+            const ext = gl.getExtension("WEBGL_debug_renderer_info");
+            if (ext) { o.webgl.unmaskedVendor = gl.getParameter(ext.UNMASKED_VENDOR_WEBGL); o.webgl.unmaskedRenderer = gl.getParameter(ext.UNMASKED_RENDERER_WEBGL); }
+            else { o.webgl.unmasked = "extension not available"; }
+          } else { o.webgl = "no webgl context in worker"; }
+        } else { o.webgl = "OffscreenCanvas not available"; }
+      } catch(e){ o.webgl = "ERROR: " + e.message; }
+      return o;
+    }
+    if (typeof SharedWorkerGlobalScope !== "undefined" && self instanceof SharedWorkerGlobalScope) {
+      self.onconnect = async (ev) => { ev.ports[0].postMessage(await collect("SharedWorkerGlobalScope")); };
+    } else {
+      collect("DedicatedWorkerGlobalScope").then(o => self.postMessage(o));
+    }`;
+  const withTimeout = (p, ms) => Promise.race([p, new Promise(res => setTimeout(() => res("TIMEOUT after " + ms + " ms"), ms))]);
+  const blobUrl = () => URL.createObjectURL(new Blob([workerSrc], {type:"text/javascript"}));
+  r.workers = {};
+  try {
+    r.workers.dedicated = await withTimeout(new Promise((res) => {
+      const w = new Worker(blobUrl());
+      w.onmessage = (ev) => { res(ev.data); w.terminate(); };
+      w.onerror = (ev) => res("ERROR: " + (ev.message || "worker failed to start"));
+    }), 5000);
+  } catch(e){ r.workers.dedicated = "ERROR: " + e.name + ": " + e.message; }
+  try {
+    if (typeof SharedWorker === "function") {
+      r.workers.shared = await withTimeout(new Promise((res) => {
+        const w = new SharedWorker(blobUrl());
+        w.port.onmessage = (ev) => res(ev.data);
+        w.onerror = (ev) => res("ERROR: " + (ev.message || "shared worker failed to start"));
+        w.port.start();
+      }), 5000);
+    } else { r.workers.shared = "SharedWorker not supported"; }
+  } catch(e){ r.workers.shared = "ERROR: " + e.name + ": " + e.message; }
+  // Does each worker report the same version details as the page itself?
+  const key = (x) => { try { return JSON.stringify([x.uaData_highEntropy.fullVersionList, x.uaData_highEntropy.platformVersion, x.uaData_highEntropy.model]); } catch(e){ return null; } };
+  r.workers.summary = {
+    dedicatedMatchesPage: key(r.workers.dedicated) !== null && key(r.workers.dedicated) === key(r),
+    sharedMatchesPage: key(r.workers.shared) !== null && key(r.workers.shared) === key(r)
+  };
   const json = JSON.stringify(r, null, 2);
   document.getElementById('out').textContent = json;
   document.getElementById('copy').onclick = async () => {
